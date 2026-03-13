@@ -19,8 +19,13 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 # Load .env from the project root (same directory as manage.py)
 load_dotenv(BASE_DIR / '.env')
+# Also load parent backend/.env if present.
+load_dotenv(BASE_DIR.parent / '.env')
 
-GEMINI_API_KEY = os.environ.get('GEMINI_API', '')
+# Support both legacy and standard key names.
+GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY') or os.environ.get('GEMINI_API', '')
+# Optional override for model choice.
+GEMINI_MODEL = os.environ.get('GEMINI_MODEL', 'gemini-2.0-flash')
 
 
 # Quick-start development settings - unsuitable for production

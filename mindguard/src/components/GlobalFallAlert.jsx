@@ -6,7 +6,7 @@ export default function GlobalFallAlert() {
     const [lastFallTime, setLastFallTime] = useState(null);
 
     // 🚨 VERIFY THIS IP ADDRESS! It must be your laptop's current IP.
-    const DJANGO_API_URL = 'http://192.168.1.36:8000/api/fall-detect/incidents/';
+    const DJANGO_API_URL = 'http://10.55.184.35:8000/api/fall-detect/incidents/';
 
     useEffect(() => {
         // Just to prove the component is actually loading on the screen
@@ -20,10 +20,13 @@ export default function GlobalFallAlert() {
                 const response = await fetch(DJANGO_API_URL);
                 
                 if (response.ok) {
-                    const data = await response.json();
-                    console.log("📨 Django replied:", data); // Let's see what Django says!
+                    const jsonData = await response.json();
+                    console.log("📨 Django replied:", jsonData); // Let's see what Django says!
                     
-                    if (data.alert === true && data.timestamp !== lastFallTime) {
+                    // Handle array response (new backend) or object response (old backend/fallback)
+                    const data = Array.isArray(jsonData) ? jsonData[0] : jsonData;
+
+                    if (data && data.alert === true && data.timestamp !== lastFallTime) {
                         console.log("🚨 TRIGGERING RED SCREEN NOW!");
                         setLastFallTime(data.timestamp);
                         setAlertActive(true);

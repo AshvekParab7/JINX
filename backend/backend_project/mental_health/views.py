@@ -193,11 +193,54 @@ def _voice_visual_theme(mood):
     }
 
 
-def _gemini_reply(level, score, keywords, session, frontend_history=None):
+def _gemini_model_candidates():
+    configured = (
+        getattr(settings, 'GEMINI_MODEL', '')
+        or os.environ.get('GEMINI_MODEL', '')
+    ).strip()
+    defaults = [
+        'gemini-2.5-flash',
+        'gemini-2.0-flash',
+        'gemini-2.0-flash-001',
+        'gemini-1.5-flash',
+    ]
+    if configured:
+        return [configured, *[name for name in defaults if name != configured]]
+    return defaults
+
+
+def _get_gemini_api_key():
+    candidates = [
+        getattr(settings, 'GEMINI_API_KEY', ''),
+        getattr(settings, 'GEMINI_API', ''),
+        os.environ.get('GOOGLE_API_KEY', ''),
+        os.environ.get('GENAI_API_KEY', ''),
+        os.environ.get('GEMINI_API_KEY', ''),
+        os.environ.get('GEMINI_API', ''),
+    ]
+    for candidate in candidates:
+        key = (candidate or '').strip()
+        if key:
+            return key
+    return ''
+
+
+def _history_to_transcript(history_items):
+    lines = []
+    for item in history_items:
+        role = 'User' if item.get('role') == 'user' else 'Jinx'
+        text = (item.get('text') or '').strip()
+        if text:
+            lines.append(f"{role}: {text}")
+    return "\n".join(lines)
+
+
+def _gemini_reply(level, score, keywords, session, frontend_history=None, current_user_text=''):
     """Generate a response using the Gemini API with conversation context."""
-    api_key = getattr(settings, 'GEMINI_API_KEY', '') or os.environ.get('GEMINI_API', '')
+    api_key = _get_gemini_api_key()
     if not api_key:
-        return "I'm here with you. Tell me more about how you're feeling."
+        logger.error("Gemini API key is missing; cannot generate chat reply.")
+        return ''
 
     client = genai.Client(api_key=api_key)
 
@@ -247,34 +290,58 @@ def _gemini_reply(level, score, keywords, session, frontend_history=None):
             parts=[genai_types.Part(text=f"(New conversation){context_note}")],
         ))
 
-    try:
-        response = client.models.generate_content(
-            model='gemini-2.0-flash',
-            contents=contents,
-            config=genai_types.GenerateContentConfig(
-                system_instruction=system_instruction,
-                temperature=0.75,
-            ),
-        )
-        response_text = _extract_response_text(response)
-        if response_text:
-            return response_text
-    except Exception as exc:
-        logger.error("Gemini chat API error: %s", exc)
+    for model_name in _gemini_model_candidates():
+        try:
+            response = client.models.generate_content(
+                model=model_name,
+                contents=contents,
+                config=genai_types.GenerateContentConfig(
+                    system_instruction=system_instruction,
+                    temperature=0.75,
+                ),
+            )
+            response_text = _extract_response_text(response)
+            if response_text:
+                return response_text
+        except Exception as exc:
+            logger.warning("Gemini chat API error for model %s: %s", model_name, exc)
 
-    return "I'm here with you. Could you tell me a bit more about how you're feeling?"
+    # Retry with a single plain-text prompt transcript; this helps with some
+    # model responses that return empty content for structured turns.
+    transcript = _history_to_transcript(history_items)
+    plain_prompt = (
+        "Continue this exact conversation as Jinx. Do not restart the chat and do not repeat the opening question.\n"
+        f"Stress context: level={level}, score={score:.2f}, keywords={', '.join(keywords) if keywords else 'none'}.\n"
+        "Conversation transcript:\n"
+        f"{transcript}\n"
+        "Respond as Jinx with the next helpful reply only."
+    )
+
+    for model_name in _gemini_model_candidates():
+        try:
+            response = client.models.generate_content(
+                model=model_name,
+                contents=plain_prompt,
+                config=genai_types.GenerateContentConfig(
+                    system_instruction=system_instruction,
+                    temperature=0.75,
+                ),
+            )
+            response_text = _extract_response_text(response)
+            if response_text:
+                return response_text
+        except Exception as exc:
+            logger.warning("Gemini plain chat retry failed for model %s: %s", model_name, exc)
+
+    logger.error("Gemini returned no chat reply after trying all configured models.")
+    return ''
 
 
 def _gemini_voice_reply(stress_level, risk_score, mood, notes, session, frontend_history=None):
-    api_key = getattr(settings, 'GEMINI_API_KEY', '') or os.environ.get('GEMINI_API', '')
-    fallback_map = {
-        'overwhelmed': "I'm here with you. Let's slow this down together and take one steady breath before the next step.",
-        'tense': "You sound like you're carrying a lot right now. Let's take a short pause and ease the pressure a little.",
-        'restless': "I'm picking up some tension. A quick grounding reset could help you feel more settled.",
-        'calm': "Your voice sounds fairly steady right now. Let's build on that and keep the momentum going.",
-    }
+    api_key = _get_gemini_api_key()
     if not api_key:
-        return fallback_map.get(mood, fallback_map['calm'])
+        logger.error("Gemini API key is missing; cannot generate voice reply.")
+        return ''
 
     client = genai.Client(api_key=api_key)
     history_items = frontend_history if (frontend_history and len(frontend_history) > 0) \
@@ -299,22 +366,24 @@ def _gemini_voice_reply(stress_level, risk_score, mood, notes, session, frontend
         parts=[genai_types.Part(text=voice_prompt)],
     ))
 
-    try:
-        response = client.models.generate_content(
-            model='gemini-2.0-flash',
-            contents=contents,
-            config=genai_types.GenerateContentConfig(
-                system_instruction=system_instruction,
-                temperature=0.75,
-            ),
-        )
-        response_text = _extract_response_text(response)
-        if response_text:
-            return response_text
-    except Exception as exc:
-        logger.error("Gemini voice API error: %s", exc)
+    for model_name in _gemini_model_candidates():
+        try:
+            response = client.models.generate_content(
+                model=model_name,
+                contents=contents,
+                config=genai_types.GenerateContentConfig(
+                    system_instruction=system_instruction,
+                    temperature=0.75,
+                ),
+            )
+            response_text = _extract_response_text(response)
+            if response_text:
+                return response_text
+        except Exception as exc:
+            logger.warning("Gemini voice API error for model %s: %s", model_name, exc)
 
-    return fallback_map.get(mood, fallback_map['calm'])
+    logger.error("Gemini returned no voice reply after trying all configured models.")
+    return ''
 
 
 def analyze_text_stress(text):
@@ -378,7 +447,20 @@ class ChatView(APIView):
         # Append the freshly saved user message to the frontend history so Gemini
         # sees the current turn too (frontend history = everything before this send).
         full_history = list(frontend_history) + [{'role': 'user', 'text': message_text}]
-        bot_text = _gemini_reply(level, score, keywords, session, frontend_history=full_history)
+        bot_text = _gemini_reply(
+            level,
+            score,
+            keywords,
+            session,
+            frontend_history=full_history,
+            current_user_text=message_text,
+        )
+
+        if not bot_text:
+            return Response(
+                {'error': 'Gemini returned an empty chat reply. Check API key, model access, and quota.'},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
 
         if score >= 0.7:
             coping_qs = CopingResource.objects.filter(is_active=True).order_by('?')[:3]
@@ -442,6 +524,12 @@ class VoiceAnalysisView(APIView):
         mood = _voice_mood_from_score(risk_score, duration_seconds)
         visual_theme = _voice_visual_theme(mood)
         ai_reply = _gemini_voice_reply(stress_level, risk_score, mood, notes, session)
+
+        if not ai_reply:
+            return Response(
+                {'error': 'Gemini returned an empty voice reply. Check API key, model access, and quota.'},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
 
         analysis = VoiceAnalysis.objects.create(
             session=session,

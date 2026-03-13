@@ -117,7 +117,7 @@ function TabItem({ tab, isActive, onPress }) {
             >
                 <Ionicons
                     name={isActive ? tab.iconActive : tab.icon}
-                    size={24}
+                    size={21}
                     color={isActive ? tab.accentColor : 'rgba(255,220,235,0.45)'}
                 />
                 <Text
@@ -172,7 +172,7 @@ export default function BottomTabBar({ active }) {
             style={[
                 styles.container,
                 {
-                    paddingBottom: Math.max(insets.bottom, 10),
+                    paddingBottom: Math.max(insets.bottom, 6),
                     transform: [{ translateY: slideY }],
                     opacity: barOp,
                 },
@@ -225,16 +225,16 @@ const styles = StyleSheet.create({
     },
     tabRow: {
         flexDirection: 'row',
-        paddingTop: 10,
+        paddingTop: 6,
         paddingHorizontal: 8,
     },
     tabItem: {
         flex: 1,
         alignItems: 'center',
         justifyContent: 'center',
-        paddingVertical: 6,
+        paddingVertical: 4,
         position: 'relative',
-        minHeight: 54,
+        minHeight: 44,
     },
     activePill: {
         position: 'absolute',

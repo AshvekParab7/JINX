@@ -1,22 +1,29 @@
-import os
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
 from twilio.rest import Client
+import os
 from .models import ActivitySnapshot, FallEvent
 
 @api_view(['GET', 'POST'])
 def log_fall_event(request):
     
-    # 1. APP POLLING (GET) - Returns True if the last entry is 'Critical'
+    # 1. APP POLLING (GET) - Returns list of recent incidents for Dashboard & Alert system
     if request.method == 'GET':
-        latest_incident = FallEvent.objects.order_by('-created_at').first()
-        if latest_incident:
-            return Response({
-                'alert': latest_incident.severity == 'Critical',
-                'timestamp': latest_incident.created_at
+        incidents = FallEvent.objects.order_by('-created_at')[:10]
+        data = []
+        for inc in incidents:
+            data.append({
+                'id': inc.id,
+                'alert': inc.severity == 'Critical',
+                'severity': inc.severity,
+                'timestamp': inc.created_at,
+                'activity': inc.activity,
+                'confidence': inc.confidence,
+                'mode': inc.mode,
+                'source': inc.source,
             })
-        return Response({'alert': False})
+        return Response(data)
 
     # 2. ESP32 DATA (POST)
     payload = request.data or {}
@@ -36,16 +43,13 @@ def log_fall_event(request):
 
     # 3. TWILIO SMS LOGIC
     if incident.auto_alert_triggered or incident.severity == 'Critical':
-        # Using environment variables for sensitive data
+        # Using tokens from environment variables
         TWILIO_ACCOUNT_SID = os.environ.get('TWILIO_ACCOUNT_SID')
         TWILIO_AUTH_TOKEN = os.environ.get('TWILIO_AUTH_TOKEN')
         TWILIO_PHONE_NUMBER = os.environ.get('TWILIO_PHONE_NUMBER')
-        target_number = os.environ.get('TARGET_PHONE_NUMBER', '+919518786952')
+        target_number = os.environ.get('TWILIO_TARGET_NUMBER', '+919518786952')
 
         try:
-            if not all([TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER]):
-                raise ValueError("Missing Twilio configuration")
-
             client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
             message = client.messages.create(
                 body=f"🚨 MINDGUARD EMERGENCY: A {incident.severity} fall was detected! Check on the user immediately.",

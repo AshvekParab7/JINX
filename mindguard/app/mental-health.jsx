@@ -77,7 +77,7 @@ const INITIAL_MESSAGES = [
     {
         id: 'w0',
         role: 'bot',
-        text: "Hi, I'm Jinx. Tell me what you're feeling, or switch to Voice and I can listen there too.",
+        text: "Hi, I'm Jinx. How are you feeling right now? You can also switch to Voice and I can listen there too.",
     },
 ];
 
@@ -144,7 +144,7 @@ function TypingBubble({ text }) {
     return <Text style={styles.botText}>{shown}</Text>;
 }
 
-const TAB_BAR_H = 70; // height of the fixed bottom tab bar
+const TAB_BAR_H = 60; // height of the fixed bottom tab bar
 
 function ChatTab({
     activeSessionId,
@@ -169,11 +169,16 @@ function ChatTab({
                     <Text style={styles.chatToolbarButtonText}>Messages</Text>
                 </Pressable>
                 <Pressable style={styles.chatToolbarButtonPrimary} onPress={onNewChat}>
-                    <Text style={styles.chatToolbarButtonPrimaryText}>+ New chat</Text>
+                    <Text style={styles.chatToolbarButtonPrimaryText}>+ New</Text>
                 </Pressable>
             </View>
 
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chatTabsRow}>
+            <ScrollView
+                horizontal
+                style={styles.chatTabsStrip}
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={styles.chatTabsRow}
+            >
                 {chats.map((chat) => (
                     <Pressable
                         key={chat.session_id}
@@ -902,6 +907,9 @@ export default function MentalHealthScreen() {
                 .map((m) => ({ role: m.role, text: m.text }));
 
             const data = await sendMentalHealthChat(trimmed, currentSessionId, historySnapshot);
+            if (data?.error || !data?.reply) {
+                throw new Error(data?.error || 'No reply returned from AI service.');
+            }
             setMessages((current) => {
                 const updated = current.map((message) =>
                     message.id === userMessageId
@@ -911,18 +919,20 @@ export default function MentalHealthScreen() {
 
                 return [
                     ...updated,
-                    { id: `b-${Date.now()}`, role: 'bot', text: data.reply || "I'm here with you." },
+                    { id: `b-${Date.now()}`, role: 'bot', text: data.reply },
                 ];
             });
             updateSession(data.session_id, data.session_risk ?? data.risk_score ?? 0);
             await loadChatSessions();
-        } catch {
+        } catch (error) {
             setMessages((current) => [
                 ...current,
                 {
                     id: `b-${Date.now()}`,
                     role: 'bot',
-                    text: 'Jinx could not reach the backend right now. Check your connection and try again.',
+                    text: error?.message
+                        ? `Jinx could not get an AI reply: ${error.message}`
+                        : 'Jinx could not reach the backend right now. Check your connection and try again.',
                 },
             ]);
         } finally {
@@ -1121,7 +1131,7 @@ const styles = StyleSheet.create({
         borderWidth: 1,
         borderColor: 'rgba(115, 142, 183, 0.12)',
     },
-    tabItem: { flex: 1, paddingVertical: 10, alignItems: 'center', borderRadius: 12 },
+    tabItem: { flex: 1, paddingVertical: 7, alignItems: 'center', borderRadius: 12 },
     tabItemActive: { backgroundColor: 'rgba(103, 232, 249, 0.14)', borderWidth: 1, borderColor: 'rgba(103, 232, 249, 0.2)' },
     tabLabel: { color: '#6d84a6', fontWeight: '700', fontSize: 13 },
     tabLabelActive: { color: '#67e8f9', fontWeight: '900' },
@@ -1129,12 +1139,24 @@ const styles = StyleSheet.create({
     chatToolbar: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 16, marginBottom: 10 },
     chatToolbarButton: { paddingVertical: 10, paddingHorizontal: 14, borderRadius: 16, backgroundColor: 'rgba(14, 25, 47, 0.95)', borderWidth: 1, borderColor: 'rgba(115, 142, 183, 0.14)' },
     chatToolbarButtonText: { color: '#d9e7ff', fontWeight: '700', fontSize: 13 },
-    chatToolbarButtonPrimary: { paddingVertical: 10, paddingHorizontal: 14, borderRadius: 16, backgroundColor: 'rgba(82, 118, 255, 0.22)', borderWidth: 1, borderColor: 'rgba(103, 137, 255, 0.2)' },
-    chatToolbarButtonPrimaryText: { color: '#f8fbff', fontWeight: '800', fontSize: 13 },
-    chatTabsRow: { paddingHorizontal: 16, gap: 10, paddingBottom: 10 },
-    chatSessionTab: { maxWidth: 150, paddingHorizontal: 14, paddingVertical: 10, borderRadius: 999, backgroundColor: 'rgba(12, 22, 43, 0.88)', borderWidth: 1, borderColor: 'rgba(115, 142, 183, 0.12)' },
+    chatToolbarButtonPrimary: { paddingVertical: 8, paddingHorizontal: 12, borderRadius: 14, backgroundColor: 'rgba(82, 118, 255, 0.22)', borderWidth: 1, borderColor: 'rgba(103, 137, 255, 0.2)' },
+    chatToolbarButtonPrimaryText: { color: '#f8fbff', fontWeight: '800', fontSize: 12 },
+    chatTabsStrip: { maxHeight: 34, minHeight: 30 },
+    chatTabsRow: { paddingHorizontal: 14, gap: 7, paddingBottom: 2, alignItems: 'center', flexGrow: 0 },
+    chatSessionTab: {
+        alignSelf: 'flex-start',
+        maxWidth: 98,
+        height: 26,
+        paddingHorizontal: 8,
+        paddingVertical: 2,
+        borderRadius: 10,
+        justifyContent: 'center',
+        backgroundColor: 'rgba(12, 22, 43, 0.88)',
+        borderWidth: 1,
+        borderColor: 'rgba(115, 142, 183, 0.12)',
+    },
     chatSessionTabActive: { backgroundColor: 'rgba(82, 118, 255, 0.22)', borderColor: 'rgba(103, 137, 255, 0.2)' },
-    chatSessionTabText: { color: '#89a1bf', fontWeight: '700', fontSize: 13 },
+    chatSessionTabText: { color: '#89a1bf', fontWeight: '600', fontSize: 10 },
     chatSessionTabTextActive: { color: '#f8fbff' },
     chatMenuPanel: { marginHorizontal: 16, marginBottom: 12, backgroundColor: 'rgba(7, 14, 28, 0.98)', borderRadius: 22, padding: 14, borderWidth: 1, borderColor: 'rgba(102, 129, 170, 0.16)' },
     chatMenuTitle: { color: '#f8fbff', fontSize: 15, fontWeight: '800', marginBottom: 8 },

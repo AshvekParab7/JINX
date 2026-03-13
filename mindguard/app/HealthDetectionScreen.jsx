@@ -235,7 +235,9 @@ export default function HealthDetectionScreen() {
 
     const resetScan = () => { setImage(null); setResult(null); };
 
-    const confidencePct = result ? (result.confidence || 0) : 0;
+    const confidencePct = result
+        ? Number(String(result.confidence ?? '0').replace('%', '')) || Math.round((result.confidence_score || 0) * 100)
+        : 0;
 
     return (
         <SafeAreaView style={styles.safeArea} edges={['top']}>

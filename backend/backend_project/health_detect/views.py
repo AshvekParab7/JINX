@@ -1,6 +1,7 @@
 import json
 import os
 from pathlib import Path
+from io import BytesIO
 
 from django.conf import settings
 from rest_framework import status
@@ -22,6 +23,12 @@ DEFAULT_MODEL_LABELS = [
 ]
 
 CONDITION_DETAILS = {
+    'non_medical_content': {
+        'condition': 'Unsupported Image For Health Scan',
+        'scan_type': 'unknown',
+        'advice': 'Please upload a clear close-up of skin, retina, or wound area. Objects or scenery cannot be screened by this feature.',
+        'summary': 'The uploaded photo does not appear to be a medically relevant skin, retina, or wound image.',
+    },
     'healthy_skin': {
         'condition': 'No Strong Skin Red Flags',
         'scan_type': 'skin',
@@ -193,12 +200,15 @@ def _clamp(value, minimum=0.0, maximum=1.0):
 
 def _build_response_payload(condition_key, confidence_score, analysis_source, detected_pattern, extra=None):
     details = CONDITION_DETAILS.get(condition_key, CONDITION_DETAILS['healthy_skin'])
+    confidence_percent = round(confidence_score * 100)
     payload = {
         'condition_key': condition_key,
         'condition': details['condition'],
         'scan_type': details['scan_type'],
         'confidence_score': round(confidence_score, 4),
-        'confidence': f"{round(confidence_score * 100)}%",
+        # Keep `confidence` numeric for frontend ring components.
+        'confidence': confidence_percent,
+        'confidence_text': f"{confidence_percent}%",
         'advice': details['advice'],
         'summary': details['summary'],
         'detected_pattern': detected_pattern,
@@ -239,6 +249,117 @@ def _analyze_with_model(image):
     )
 
 
+def _extract_first_json_block(text):
+    if not text:
+        return None
+
+    start = text.find('{')
+    end = text.rfind('}')
+    if start == -1 or end == -1 or end <= start:
+        return None
+
+    try:
+        return json.loads(text[start:end + 1])
+    except json.JSONDecodeError:
+        return None
+
+
+def _gemini_vision_model_candidates():
+    configured = (
+        os.environ.get('HEALTH_VISION_MODEL', '').strip()
+        or os.environ.get('GEMINI_VISION_MODEL', '').strip()
+        or os.environ.get('GEMINI_MODEL', '').strip()
+        or getattr(settings, 'GEMINI_MODEL', '').strip()
+    )
+    defaults = [
+        'gemini-2.5-pro',
+        'gemini-2.5-flash',
+        'gemini-2.0-flash',
+    ]
+    if configured:
+        return [configured, *[name for name in defaults if name != configured]]
+    return defaults
+
+
+def _analyze_with_gemini_vision(image):
+    api_key = getattr(settings, 'GEMINI_API_KEY', '') or os.environ.get('GEMINI_API', '')
+    if not api_key:
+        return None
+
+    try:
+        from google import genai
+        from google.genai import types as genai_types
+    except ModuleNotFoundError:
+        return None
+
+    # Normalize to jpeg bytes for reliable model input.
+    image_buffer = BytesIO()
+    image.save(image_buffer, format='JPEG', quality=92)
+    image_bytes = image_buffer.getvalue()
+
+    prompt = (
+        "You are a strict medical image triage assistant for a mobile health scanner. "
+        "First decide if the image is medically relevant (skin, retina, wound). "
+        "If not medically relevant (objects, scenery, dead things, toys, furniture, food-only objects, random non-body images), "
+        "mark it as non-medical and do not provide a diagnosis. "
+        "Return only valid JSON with keys: "
+        "is_medical_relevant (boolean), "
+        "scan_type (one of: skin, retina, wound, unknown), "
+        "condition_key (one of: healthy_skin, dermatitis, fungal_infection, pigmentation_irregularity, diabetic_retinopathy_warning, retina_clear, acne_inflammation, non_medical_content), "
+        "confidence_score (number between 0 and 1), "
+        "detected_pattern (short sentence)."
+    )
+
+    client = genai.Client(api_key=api_key)
+    image_part = genai_types.Part.from_bytes(data=image_bytes, mime_type='image/jpeg')
+
+    for model_name in _gemini_vision_model_candidates():
+        try:
+            response = client.models.generate_content(
+                model=model_name,
+                contents=[prompt, image_part],
+                config=genai_types.GenerateContentConfig(
+                    temperature=0.15,
+                    response_mime_type='application/json',
+                ),
+            )
+
+            response_text = getattr(response, 'text', '') or ''
+            payload = _extract_first_json_block(response_text)
+            if not isinstance(payload, dict):
+                continue
+
+            is_medical = bool(payload.get('is_medical_relevant'))
+            condition_key = str(payload.get('condition_key') or '').strip()
+            scan_type = str(payload.get('scan_type') or '').strip()
+            detected_pattern = str(payload.get('detected_pattern') or '').strip() or 'Pattern extracted by Gemini vision analysis.'
+            confidence_score = _clamp(float(payload.get('confidence_score', 0.0)))
+
+            if not is_medical or condition_key == 'non_medical_content':
+                return _build_response_payload(
+                    condition_key='non_medical_content',
+                    confidence_score=min(confidence_score, 0.25),
+                    analysis_source='gemini_vision',
+                    detected_pattern=detected_pattern,
+                    extra={'is_medical_relevant': False},
+                )
+
+            if condition_key not in CONDITION_DETAILS:
+                condition_key = 'healthy_skin' if scan_type != 'retina' else 'retina_clear'
+
+            return _build_response_payload(
+                condition_key=condition_key,
+                confidence_score=max(0.40, confidence_score),
+                analysis_source='gemini_vision',
+                detected_pattern=detected_pattern,
+                extra={'is_medical_relevant': True},
+            )
+        except Exception:
+            continue
+
+    return None
+
+
 def _analyze_with_screening_rules(image):
     from PIL import ImageStat
 
@@ -259,6 +380,17 @@ def _analyze_with_screening_rules(image):
     redness_bias = (mean_red - mean_green) / 255
     darkness_bias = 1 - ((mean_red + mean_green + mean_blue) / (255 * 3))
     retina_like = mean_red > mean_green > mean_blue and warm_pixels > 0.45 and dark_pixels > 0.05
+
+    # Reject likely non-medical/non-body photos in fallback mode.
+    skin_likeness = (warm_pixels * 0.55) + (neutral_pixels * 0.30) + ((1 - bright_pixels) * 0.15)
+    if not retina_like and skin_likeness < 0.28:
+        return _build_response_payload(
+            condition_key='non_medical_content',
+            confidence_score=0.18,
+            analysis_source='screening_rules',
+            detected_pattern='Image does not match common skin/retina/wound visual characteristics.',
+            extra={'is_medical_relevant': False},
+        )
 
     if retina_like:
         lesion_score = _clamp((dark_pixels * 0.5) + (contrast * 0.35) + (red_hot_pixels * 0.15))
@@ -337,7 +469,7 @@ def analyze_health_image(request):
         )
 
     try:
-        analysis = _analyze_with_model(image) or _analyze_with_screening_rules(image)
+        analysis = _analyze_with_gemini_vision(image) or _analyze_with_model(image) or _analyze_with_screening_rules(image)
         return Response(analysis, status=status.HTTP_200_OK)
     except Exception as error:
         return Response(

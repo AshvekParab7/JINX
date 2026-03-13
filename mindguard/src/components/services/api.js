@@ -25,9 +25,9 @@ const inferDevBaseUrl = () => {
     return `http://${globalThis.location.hostname}:8000/api`;
   }
 
-  return Platform.OS === "android"
-    ? "http://10.0.2.2:8000/api"
-    : "http://127.0.0.1:8000/api";
+  // Fallback for standalone builds (APK) or when debuggerHost is unavailable
+  // Using the laptop's IP on the hotspot network
+  return "http://10.55.184.35:8000/api";
 };
 
 const BASE_URL = (envBaseUrl || configBaseUrl || inferDevBaseUrl()).replace(
